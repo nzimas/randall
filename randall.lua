@@ -1,5 +1,8 @@
--- randall.lua (v4.1)
--- Implement crossfading on sample load (K2) using 4 voices.
+-- Randall
+-- Softcut randomizer
+-- Select a root dir w/ samples
+-- press k2 to rand samples
+-- press k3 to rand params
 
 -- Global variables
 local sample_dir_root -- Managed by params
@@ -48,15 +51,15 @@ function find_audio_files(current_path)
       end
     end
     for _, item_name in ipairs(items) do -- Then files
-       if not item_name:match("^%.") then
+        if not item_name:match("^%.") then
           local full_item_path = current_path .. "/" .. item_name
           if not is_likely_directory(full_item_path) then
              local lower_item = string.lower(item_name)
              if lower_item:match("%.wav$") or lower_item:match("%.aif$") or lower_item:match("%.aiff$") then
-                table.insert(found_files, full_item_path)
+               table.insert(found_files, full_item_path)
              end
           end
-       end
+        end
     end
   end
   return found_files
@@ -288,7 +291,10 @@ function init()
   print("Using MAX_BUF_SECS = " .. MAX_BUF_SECS)
 
   -- === PARAMETERS ===
-  params:add_group("Randall Config", 7) -- Increased count for new params
+  -- Corrected group counts
+
+  -- Randall Config group contains root_dir, crossfade_time, load_wait_time, separator = 4 items
+  params:add_group("Randall Config", 4) -- <<< CORRECTED COUNT
   params:add_file("root_dir", "Sample Root Dir", _path.audio)
   params:set_action("root_dir", function(path)
       if is_likely_directory(path) then
@@ -305,7 +311,8 @@ function init()
   params:add_control("load_wait_time", "Load Wait Time (s)", controlspec.new(0.5, 5.0, 'lin', 0.1, 1.0)) -- Time to wait after load command
   params:add_separator()
 
-  params:add_group("Direct Control", 4)
+  -- Direct Control group contains voice1_level, voice1_pan, voice2_level, voice2_pan = 4 items
+  params:add_group("Direct Control", 4) -- This count was already correct
   -- These now control the *logically* first and second voices, which map to active_voices[1] and active_voices[2]
   params:add_control("voice1_level", "Voice 1 Level", controlspec.new(0, 1, 'lin', 0.01, 0.7))
   params:set_action("voice1_level", function(x) softcut.level(active_voices[1], x) end)
@@ -316,7 +323,8 @@ function init()
   params:add_control("voice2_pan", "Voice 2 Pan", controlspec.new(0, 1, 'lin', 0.01, 0.75))
   params:set_action("voice2_pan", function(x) softcut.pan(active_voices[2], x) end)
 
-  params:add_group("Randomization Ranges", 20)
+  -- Randomization Ranges group contains 23 items (controls + separators)
+  params:add_group("Randomization Ranges", 23) -- <<< CORRECTED COUNT
   params:add_control("rate_min", "Rate Min", controlspec.new(-4, 4, 'lin', 0.01, -1.5)); params:add_control("rate_max", "Rate Max", controlspec.new(-4, 4, 'lin', 0.01, 1.5))
   params:add_control("level_min", "Level Min", controlspec.new(0, 1, 'lin', 0.01, 0.3)); params:add_control("level_max", "Level Max", controlspec.new(0, 1, 'lin', 0.01, 0.9))
   params:add_control("pan_min", "Pan Min", controlspec.new(0, 1, 'lin', 0.01, 0.0)); params:add_control("pan_max", "Pan Max", controlspec.new(0, 1, 'lin', 0.01, 1.0))
