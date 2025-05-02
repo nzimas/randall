@@ -1,21 +1,20 @@
--- randall.lua (v3.1)
--- Fix audio.file_info call, add K1 long-press play trigger
+-- randall.lua (v4.0)
+-- Add parameters for randomization ranges, root dir, and direct voice control.
 
 -- Global variables
-local sample_dir_root = _path.audio
+-- sample_dir_root will now be managed by params, initialized in init()
 local available_samples = {}
 local current_sample_path = {"", ""}
 local current_sample_name = {"...", "..."}
-local sample_duration = {0, 0} -- Store actual duration if possible
+local sample_duration = {0, 0}
 
 local MAX_BUF_SECS = softcut.BUFFER_MAX_SECONDS or 349.0
 
 local action_indicator = ""
 local action_timer = nil
 
--- Variables for K1 long-press detection
 local k1_down_time = nil
-local k1_held_threshold = 0.5 -- seconds to hold for long-press action
+local k1_held_threshold = 0.5
 
 -- Helper: check if path is likely a directory
 local function is_likely_directory(path)
@@ -31,6 +30,11 @@ end
 -- Find WAV/AIF audio files recursively
 function find_audio_files(current_path)
   local found_files = {}
+  -- Validate path before scanning
+  if not is_likely_directory(current_path) then
+      print("Error: Provided path for scanning is not a valid directory: " .. current_path)
+      return found_files -- Return empty list
+  end
   local items = util.scandir(current_path)
   if items then
     -- Pass 1: Dirs
@@ -59,7 +63,6 @@ function find_audio_files(current_path)
   return found_files
 end
 
-
 -- Display action temporarily
 function show_action(text)
     action_indicator = text
@@ -70,37 +73,61 @@ function show_action(text)
     redraw()
 end
 
--- Randomize parameters for a single voice
+-- Helper: Get random value within parameter range
+function get_random_param(min_id, max_id)
+    local min_val = params:get(min_id)
+    local max_val = params:get(max_id)
+    if min_val > max_val then min_val = max_val end -- Ensure min <= max
+    return math.random() * (max_val - min_val) + min_val
+end
+
+-- Helper: Get random integer within parameter range
+function get_random_param_int(min_id, max_id)
+    local min_val = params:get(min_id)
+    local max_val = params:get(max_id)
+    if min_val > max_val then min_val = max_val end
+    -- Ensure range is valid for integer random
+    if max_val < min_val then return min_val end
+    return math.random(min_val, max_val)
+end
+
+
+-- Randomize parameters for a single voice using parameter ranges
 function randomize_voice_params(voice_num)
-  print("Randomizing voice " .. voice_num .. "...")
+  print("Randomizing voice " .. voice_num .. " using parameter ranges...")
   local duration = sample_duration[voice_num]
   if duration == nil or duration <= 0 then
-      print("  Voice " .. voice_num .. " using MAX_BUF_SECS (" .. MAX_BUF_SECS .. ") for loop points.")
       duration = MAX_BUF_SECS
-  else
-      print("  Voice " .. voice_num .. " using actual duration (" .. string.format("%.2f", duration) .. ") for loop points.")
   end
 
-  -- Rate
-  local rate = math.pow(2, math.random(-250, 250) / 50); if math.random(1, 5) == 1 then rate = rate * -1 end
-  if math.abs(rate) < 0.01 then rate = 0.01 * (rate >= 0 and 1 or -1) end
+  -- Rate (Linear interpolation between min/max for now)
+  -- Consider alternative like exponential later if needed
+  local rate = get_random_param("rate_min", "rate_max")
+  if math.abs(rate) < 0.01 then rate = 0.01 * (rate >= 0 and 1 or -1) end -- Avoid 0
   softcut.rate(voice_num, rate)
+
   -- Level
-  local level = math.random(30, 100) / 100
+  local level = get_random_param("level_min", "level_max")
   softcut.level(voice_num, level)
+
   -- Pan
-  softcut.pan(voice_num, math.random())
-  -- Loop points
-  local loop_start = math.random() * duration; local loop_end = math.random() * duration
-  if loop_end < loop_start then local temp = loop_start; loop_start = loop_end; loop_end = temp end
-  local min_loop_len = 0.05
-  if loop_end - loop_start < min_loop_len then loop_end = loop_start + min_loop_len end
-  loop_start = util.clamp(loop_start, 0, MAX_BUF_SECS); loop_end = util.clamp(loop_end, loop_start, MAX_BUF_SECS)
+  local pan = get_random_param("pan_min", "pan_max")
+  softcut.pan(voice_num, pan)
+
+  -- Loop points (Percentage Based)
+  local start_pct = get_random_param("loop_start_min_pct", "loop_start_max_pct")
+  local len_pct = get_random_param("loop_len_min_pct", "loop_len_max_pct")
+  local loop_start = (start_pct / 100) * duration
+  local loop_end = loop_start + (len_pct / 100) * duration
+  local min_loop_len_abs = 0.05 -- Absolute minimum loop length in seconds
+  loop_start = util.clamp(loop_start, 0, MAX_BUF_SECS)
+  loop_end = util.clamp(loop_end, loop_start + min_loop_len_abs, MAX_BUF_SECS)
   softcut.loop_start(voice_num, loop_start); softcut.loop_end(voice_num, loop_end)
   softcut.position(voice_num, loop_start)
 
   -- Filters
   local filter_active = false; local fc = 0; local rq = 0; local filter_type = "DRY"
+  -- Use a parameter to control filter activation chance? For now, keep simple random.
   if math.random(1, 3) ~= 1 then
     filter_active = true
     softcut.pre_filter_dry(voice_num, 0); local filter_choice = math.random(1, 4)
@@ -108,22 +135,26 @@ function randomize_voice_params(voice_num)
     softcut.pre_filter_hp(voice_num, filter_choice == 2 and 1 or 0); if filter_choice == 2 then filter_type = "HP" end
     softcut.pre_filter_bp(voice_num, filter_choice == 3 and 1 or 0); if filter_choice == 3 then filter_type = "BP" end
     softcut.pre_filter_br(voice_num, filter_choice == 4 and 1 or 0); if filter_choice == 4 then filter_type = "BR" end
-    fc = math.random(50, 12000); softcut.pre_filter_fc(voice_num, fc)
-    rq = math.random(1, 150) / 10; softcut.pre_filter_rq(voice_num, rq)
+    -- Use parameter ranges for FC and RQ
+    fc = get_random_param_int("fc_min", "fc_max")
+    rq = get_random_param("rq_min", "rq_max")
+    softcut.pre_filter_fc(voice_num, fc)
+    softcut.pre_filter_rq(voice_num, rq)
   else
     softcut.pre_filter_dry(voice_num, 1); softcut.pre_filter_lp(voice_num, 0); softcut.pre_filter_hp(voice_num, 0);
     softcut.pre_filter_bp(voice_num, 0); softcut.pre_filter_br(voice_num, 0)
   end
 
   -- Slew/Fade times
-  local rate_slew = math.random(1, 50) / 100; local level_slew = math.random(1, 50) / 100
-  local fade = math.random(1, 100) / 1000
+  local rate_slew = get_random_param("rate_slew_min", "rate_slew_max")
+  local level_slew = get_random_param("level_slew_min", "level_slew_max")
+  local fade = get_random_param("fade_min", "fade_max")
   softcut.rate_slew_time(voice_num, rate_slew); softcut.level_slew_time(voice_num, level_slew)
   softcut.fade_time(voice_num, fade)
 
   -- Debug Print
-  print(string.format("  Voice %d: rate=%.2f, level=%.2f, loop=%.2f-%.2f, filter=%s (active=%s, fc=%d, rq=%.1f), fade=%.3f",
-                      voice_num, rate, level, loop_start, loop_end, filter_type, tostring(filter_active), fc, rq, fade))
+  print(string.format("  Voice %d: rate=%.2f, level=%.2f, pan=%.2f, loop=%.2f-%.2f, filter=%s (active=%s, fc=%d, rq=%.1f), fade=%.3f",
+                      voice_num, rate, level, pan, loop_start, loop_end, filter_type, tostring(filter_active), fc, rq, fade))
 
   -- Ensure playback is on
   softcut.loop(voice_num, 1); softcut.play(voice_num, 1)
@@ -132,11 +163,13 @@ end
 
 -- Function to load two new random samples
 function load_random_samples()
-  print("Finding WAV/AIF samples in " .. sample_dir_root .. " ...")
-  available_samples = find_audio_files(sample_dir_root)
+  local current_root = params:get("root_dir") -- Get root dir from params
+  print("Finding WAV/AIF samples in " .. current_root .. " ...")
+  available_samples = find_audio_files(current_root) -- Use param value
 
   if #available_samples < 2 then
-    print("Error: Need >= 2 WAV/AIF samples in " .. sample_dir_root); show_action("Error: No Samples"); redraw()
+    print("Error: Need >= 2 WAV/AIF samples in specified directory.")
+    show_action("Error: No Samples"); redraw()
     softcut.play(1, 0); softcut.play(2, 0); current_sample_name = {"Error", "Error"}; current_sample_path = {"", ""}
     return
   end
@@ -155,42 +188,26 @@ function load_random_samples()
 
   print("Loading sample 1: " .. current_sample_name[1]); print("Loading sample 2: " .. current_sample_name[2])
 
-  -- Stop playback
+  -- Stop playback, clear buffers, initiate loading
   softcut.play(1, 0); softcut.play(2, 0)
-  -- Clear buffers
   softcut.buffer_clear(1); softcut.buffer_clear(2)
-  -- Initiate loading
   softcut.buffer_read_mono(current_sample_path[1], 0, 0, -1, 1, 1)
   softcut.buffer_read_mono(current_sample_path[2], 0, 0, -1, 1, 2)
 
-  -- Actions after loading commands (run in coroutine)
+  -- Post-load actions in coroutine
   clock.run(function()
-      clock.sleep(0.2) -- Brief initial wait
+      clock.sleep(0.2)
       print("Waiting for buffers to load...")
-      clock.sleep(1.0) -- Main wait for disk I/O
+      clock.sleep(1.0) -- Wait for load
       print("Buffers load initiated.")
 
-      -- *** Get file info correctly ***
       local ch1, samples1, rate1 = audio.file_info(current_sample_path[1])
       local ch2, samples2, rate2 = audio.file_info(current_sample_path[2])
+      if samples1 and rate1 and rate1 > 0 then sample_duration[1] = samples1 / rate1 else sample_duration[1] = 0 end
+      if samples2 and rate2 and rate2 > 0 then sample_duration[2] = samples2 / rate2 else sample_duration[2] = 0 end
+      print("Durations calculated (or failed): D1="..sample_duration[1]..", D2="..sample_duration[2])
 
-      -- Calculate and store duration if info is valid
-      if samples1 and rate1 and rate1 > 0 then
-          sample_duration[1] = samples1 / rate1
-          print("Buffer 1 sample duration: " .. string.format("%.2f", sample_duration[1]))
-      else
-          print("Could not get valid info for buffer 1 sample.")
-          sample_duration[1] = 0 -- Indicate failure (will use MAX_BUF_SECS)
-      end
-      if samples2 and rate2 and rate2 > 0 then
-          sample_duration[2] = samples2 / rate2
-          print("Buffer 2 sample duration: " .. string.format("%.2f", sample_duration[2]))
-      else
-           print("Could not get valid info for buffer 2 sample.")
-           sample_duration[2] = 0 -- Indicate failure (will use MAX_BUF_SECS)
-      end
-
-      -- Initial randomization
+      -- Initial randomization uses parameter ranges
       randomize_voice_params(1)
       randomize_voice_params(2)
       show_action("Samples Loaded!")
@@ -201,71 +218,141 @@ end
 
 function init()
   math.randomseed(os.time())
-  print("randall init (v3.1)")
+  print("randall init (v4.0)")
   print("Using MAX_BUF_SECS = " .. MAX_BUF_SECS)
-  audio.level_cut(1.0)
+
+  -- === PARAMETERS ===
+  params:add_group("Randall Config", 6) -- Group for main config
+  params:add_file("root_dir", "Sample Root Dir", _path.audio) -- Default to standard audio path
+  params:set_action("root_dir", function(path)
+      -- Basic validation - check if it's likely a directory before accepting
+      if is_likely_directory(path) then
+          print("Sample root directory set to: " .. path)
+          -- Note: Does not automatically reload, user must press K2
+      else
+          local dir_name = string.match(path, "^(.*)/[^/]*$") or _path.audio -- Try parent dir or default
+          if is_likely_directory(dir_name) then
+             print("Selected path was not a directory, using parent: " .. dir_name)
+             params:set("root_dir", dir_name) -- Update param to parent dir
+          else
+             print("Selected path and parent are invalid, reverting to default.")
+             params:set("root_dir", _path.audio) -- Revert to default if parent also invalid
+          end
+          softcut.buffer_clear() -- Clear buffers if path was bad? Or just warn user? Let's just warn.
+          print("Please select a valid directory.")
+          show_action("Select Valid Dir!")
+      end
+      -- Clear sample list cache if dir changes? Or let load_random_samples handle it? Let load handle it.
+  end)
+  params:add_separator()
+
+  params:add_group("Direct Control", 4)
+  params:add_control("voice1_level", "Voice 1 Level", controlspec.new(0, 1, 'lin', 0.01, 0.7))
+  params:set_action("voice1_level", function(x) softcut.level(1, x) end)
+  params:add_control("voice1_pan", "Voice 1 Pan", controlspec.new(0, 1, 'lin', 0.01, 0.25))
+  params:set_action("voice1_pan", function(x) softcut.pan(1, x) end)
+  params:add_control("voice2_level", "Voice 2 Level", controlspec.new(0, 1, 'lin', 0.01, 0.7))
+  params:set_action("voice2_level", function(x) softcut.level(2, x) end)
+  params:add_control("voice2_pan", "Voice 2 Pan", controlspec.new(0, 1, 'lin', 0.01, 0.75))
+  params:set_action("voice2_pan", function(x) softcut.pan(2, x) end)
+
+  params:add_group("Randomization Ranges", 20) -- Lots of params here!
+  params:add_control("rate_min", "Rate Min", controlspec.new(-4, 4, 'lin', 0.01, -1.5))
+  params:add_control("rate_max", "Rate Max", controlspec.new(-4, 4, 'lin', 0.01, 1.5))
+  params:add_control("level_min", "Level Min", controlspec.new(0, 1, 'lin', 0.01, 0.3))
+  params:add_control("level_max", "Level Max", controlspec.new(0, 1, 'lin', 0.01, 0.9))
+  params:add_control("pan_min", "Pan Min", controlspec.new(0, 1, 'lin', 0.01, 0.0))
+  params:add_control("pan_max", "Pan Max", controlspec.new(0, 1, 'lin', 0.01, 1.0))
+  params:add_separator("Loop (%)")
+  params:add_control("loop_start_min_pct", "Start Min %", controlspec.new(0, 100, 'lin', 1, 0))
+  params:add_control("loop_start_max_pct", "Start Max %", controlspec.new(0, 100, 'lin', 1, 80))
+  params:add_control("loop_len_min_pct", "Length Min %", controlspec.new(1, 100, 'lin', 1, 5))
+  params:add_control("loop_len_max_pct", "Length Max %", controlspec.new(1, 100, 'lin', 1, 50))
+  params:add_separator("Filter")
+  params:add_control("fc_min", "Filter FC Min (Hz)", controlspec.new(20, 12000, 'exp', 1, 100))
+  params:add_control("fc_max", "Filter FC Max (Hz)", controlspec.new(20, 12000, 'exp', 1, 10000))
+  params:add_control("rq_min", "Filter RQ Min", controlspec.new(0.1, 20, 'lin', 0.1, 0.5))
+  params:add_control("rq_max", "Filter RQ Max", controlspec.new(0.1, 20, 'lin', 0.1, 8.0))
+  params:add_separator("Timing (s)")
+  params:add_control("rate_slew_min", "Rate Slew Min", controlspec.new(0.01, 2, 'exp', 0.01, 0.01))
+  params:add_control("rate_slew_max", "Rate Slew Max", controlspec.new(0.01, 2, 'exp', 0.01, 0.5))
+  params:add_control("level_slew_min", "Level Slew Min", controlspec.new(0.01, 2, 'exp', 0.01, 0.01))
+  params:add_control("level_slew_max", "Level Slew Max", controlspec.new(0.01, 2, 'exp', 0.01, 0.5))
+  params:add_control("fade_min", "Fade Min", controlspec.new(0.001, 0.5, 'exp', 0.001, 0.005))
+  params:add_control("fade_max", "Fade Max", controlspec.new(0.001, 0.5, 'exp', 0.001, 0.1))
+
+  -- === END PARAMETERS ===
+
+  -- Set master level now controlled by param actions, but set initial softcut level
+  audio.level_cut(1.0) -- Keep overall softcut engine maxed, rely on voice levels
   print("Set audio.level_cut to 1.0")
 
+  -- Configure softcut voices
   for i = 1, 2 do
-    softcut.enable(i, 1); softcut.buffer(i, i); softcut.loop(i, 1); softcut.level(i, 0);
+    softcut.enable(i, 1); softcut.buffer(i, i); softcut.loop(i, 1); softcut.level(i, 0); -- Start silent
     softcut.play(i, 0); softcut.rec_level(i, 0); softcut.pre_level(i, 1); softcut.fade_time(i, 0.05);
+    -- Reset filters
     softcut.pre_filter_dry(i, 1.0); softcut.pre_filter_lp(i, 0.0); softcut.pre_filter_hp(i, 0.0);
-    softcut.pre_filter_bp(i, 0.0); softcut.pre_filter_br(i, 0.0); softcut.post_filter_dry(i, 1.0);
-    softcut.post_filter_lp(i, 0.0); softcut.post_filter_hp(i, 0.0); softcut.post_filter_bp(i, 0.0);
-    softcut.post_filter_br(i, 0.0);
+    softcut.pre_filter_bp(i, 0.0); softcut.pre_filter_br(i, 0.0);
+    softcut.post_filter_dry(i, 1.0); softcut.post_filter_lp(i, 0.0); softcut.post_filter_hp(i, 0.0);
+    softcut.post_filter_bp(i, 0.0); softcut.post_filter_br(i, 0.0);
   end
 
+  -- Set initial voice levels/pans from params AFTER softcut setup
+  softcut.level(1, params:get("voice1_level"))
+  softcut.pan(1, params:get("voice1_pan"))
+  softcut.level(2, params:get("voice2_level"))
+  softcut.pan(2, params:get("voice2_pan"))
+
+  -- Load initial samples using param default root dir
   load_random_samples()
+
   print("randall ready")
 end
 
 function key(n, z)
   -- K1 Long Press Logic
   if n == 1 then
-    if z == 1 then
-      -- Key 1 pressed down, record time
-      k1_down_time = clock.time()
+    if z == 1 then k1_down_time = clock.time()
     else
-      -- Key 1 released
       if k1_down_time ~= nil then
-        local hold_duration = clock.time() - k1_down_time
-        if hold_duration >= k1_held_threshold then
-          -- Long press action: Force play both voices
+        if clock.time() - k1_down_time >= k1_held_threshold then
           print("K1 long press: Force play voices 1 & 2")
-          softcut.play(1, 1)
-          softcut.play(2, 1)
+          softcut.play(1, 1); softcut.play(2, 1)
           show_action("Play Triggered!")
-        else
-          -- Short press action (if any needed in future)
-          print("K1 short press detected (no action)")
         end
       end
-      k1_down_time = nil -- Reset timer
+      k1_down_time = nil
     end
   -- K2 Press: Load new samples
   elseif n == 2 and z == 1 then
     load_random_samples()
-  -- K3 Press: Randomize parameters
+  -- K3 Press: Randomize parameters based on ranges
   elseif n == 3 and z == 1 then
     show_action("Randomizing...")
     randomize_voice_params(1)
     randomize_voice_params(2)
+    -- After randomizing, immediately apply the direct control levels/pans
+    -- This makes K3 randomize *everything else* but respects current knobs
+    -- *Alternative:* comment these out if K3 should override direct controls too
+    softcut.level(1, params:get("voice1_level"))
+    softcut.pan(1, params:get("voice1_pan"))
+    softcut.level(2, params:get("voice2_level"))
+    softcut.pan(2, params:get("voice2_pan"))
     redraw()
   end
 end
 
 function enc(n, d)
-  -- unused
+  -- unused - params handled by menu
 end
 
 function redraw()
-  screen.clear(); screen.level(15); screen.move(0, 10); screen.text("randall v3.1") -- Version bump
+  screen.clear(); screen.level(15); screen.move(0, 10); screen.text("randall v4.0")
   screen.move(0, 25); screen.text("1: " .. current_sample_name[1])
   screen.move(0, 35); screen.text("2: " .. current_sample_name[2])
   screen.move(0, 50); screen.text("K2: New Samples"); screen.move(0, 60); screen.text("K3: Randomize")
-  -- Add K1 long press info
   screen.level(4); screen.move(64, 60); screen.text_center("(K1 hold: Play)")
-
   if action_indicator ~= "" then
       screen.level(8); screen.move(0, 10); screen.text_right(action_indicator); screen.level(15)
   end
